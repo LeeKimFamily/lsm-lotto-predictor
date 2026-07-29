@@ -203,23 +203,22 @@ async function autoLoadFiles() {
     alert("lotto.json 파일을 찾을 수 없습니다. 수동 업로드를 사용하세요.");
 }
 
-// app.js의 processDataAutomatically 함수 수정
+// 🎯 [최신 500회차 기준] 2중 제외(A, B) 및 쏠림 필터를 거친 트렌드 패턴 TOP 5 주입
 function processDataAutomatically() {
-
+    // 1. 전체 데이터 정렬 (과거 -> 최신)
     lottoData.sort((a, b) => a.round - b.round);
     
-    // 1~5 단계 분석 (기존 코드 유지)
+    // 전체 통계 렌더링 (기존 유지)
     const stats = Analyzer.analyze(lottoData);
     let finalHtml = Analyzer.render(stats);
 
-    // [핵심 디버깅] 패턴 전이 확률 분석 및 '진짜' 마지막 회차 데이터 추출
     const transitions = Distribution.analyzeTransitions(lottoData);
     
-    // lottoData가 정렬되었으므로 맨 마지막 원소가 가장 최신 회차(예: 1233회차)입니다.
+    // 가장 최신 회차 데이터 추출 (A 패턴)
     const lastRoundData = lottoData[lottoData.length - 1]; 
-    const lastDist = lastRoundData.dist;
+    const lastDist = lastRoundData.dist; 
     
-    console.log(`최신 데이터 확인 - 회차: ${lastRoundData.round}, 패턴: ${lastDist}`);
+    console.log(`최신 회차 [${lastRoundData.round}회] 당첨 패턴 (A): ${lastDist}`);
 
     finalHtml += Distribution.renderUI(transitions, lastDist);
     finalHtml += TrendAnalyzer.renderTrend(lottoData);
@@ -230,42 +229,77 @@ function processDataAutomatically() {
     const prediction = Predictor.predictNext(lottoData, transitions);
     finalHtml += Predictor.renderPrediction(prediction);
 
-    // ---------------------------------------------------------------
-    // 💡 [핵심 알고리즘] 이번 회차 패턴(lastDist)의 '다음 회차들'만 추적!
-    // 과거부터가 아닌 최신 회차일수록 압도적인 점수(가중치)를 부여하여 정렬합니다.
-    // ---------------------------------------------------------------
-    const nextPatternScoreMap = {};
-    const totalRounds = lottoData.length;
+    // 💡 [패턴 검증 함수] 한 자리에 3개 이상 쏠리는 패턴 무조건 제외 (최대 2개 허용)
+    function isValidPatternFormat(patternStr) {
+        if (!patternStr) return false;
+        const counts = patternStr.split('-').map(Number);
+        for (let count of counts) {
+            if (count > 2) return false; 
+        }
+        return true;
+    }
 
-    // 전체 데이터를 돌면서 현재 최신 패턴(lastDist)과 일치하는 과거 회차를 찾습니다.
-    for (let i = 0; i < lottoData.length - 1; i++) {
-        if (lottoData[i].dist === lastDist) {
-            // 해당 과거 회차의 '바로 다음 회차' 패턴 추출
-            const nextPattern = lottoData[i + 1].dist;
-            
-            // if (nextPattern === lastDist) continue;
-            // 🎯 [최신순 점수 정렬 핵심] 
-            // i가 클수록(즉, 최신 회차에 가까운 매칭일수록) 가중치 점수가 매우 높게 부여됩니다.
-            // 옛날 45회차 뒤에 붙은 다음 패턴보다, 최근 1230회차 뒤에 붙은 다음 패턴이 엄청난 점수를 받음.
-            const recencyWeight = (i + 1) / totalRounds;
-            
-            nextPatternScoreMap[nextPattern] = (nextPatternScoreMap[nextPattern] || 0) + recencyWeight;
+    // ---------------------------------------------------------------
+    // 🛑 [최신 500회차 트렌드 집중 분석 & 2중 필터링 로직]
+    // ---------------------------------------------------------------
+    const RECENT_LIMIT = 1000;
+    // 전체 데이터 중 맨 뒤(최신)에서 500개만 싹둑 잘라서 분석에 사용합니다.
+    const recentData = lottoData.slice(-RECENT_LIMIT); 
+
+    const directNextPatterns = new Set(); 
+    
+    // 1. 최근 500회차 안에서 A(최신 패턴) 바로 다음에 나왔던 패턴들(B) 수집
+    for (let i = 0; i < recentData.length - 1; i++) {
+        if (recentData[i].dist === lastDist) {
+            const nextPattern = recentData[i + 1].dist;
+            directNextPatterns.add(nextPattern); 
         }
     }
 
-    // 가중치 점수가 가장 높은 순(최신부터 정렬)으로 상위 5개 패턴 추출
-    let top5Patterns = Object.keys(nextPatternScoreMap)
-        .sort((a, b) => nextPatternScoreMap[b] - nextPatternScoreMap[a]) // 최신 가중치 점수 높은 순 정렬
-        .slice(0, 5);
-    
-    // 안전장치: 만약 매칭 데이터가 아예 없는 경우 기본 탑 5 패턴 부여
-    if (top5Patterns.length === 0) {
-        top5Patterns = ['1-2-1-1-1', '1-1-2-1-1', '2-1-1-1-1', '1-1-1-2-1', '1-1-1-1-2'];
+    console.log(`🛑 [최신 500회차 기준 제외 B] 과거 ${lastDist} 직후 패턴:`, Array.from(directNextPatterns));
+
+    // 최근 500회차 기반 트렌드 가중치 계산
+    const candidateScoreMap = {};
+    const totalRecentRounds = recentData.length;
+
+    for (let i = 0; i < recentData.length; i++) {
+        const p = recentData[i].dist;
+
+        // [필터 1] 최신 패턴(A) 제외
+        if (p === lastDist) continue;
+
+        // [필터 2] 과거 직후 출현 패턴(B) 제외!
+        if (directNextPatterns.has(p)) continue;
+
+        // [필터 3] 한 자리에 3개 이상 쏠리는 패턴 제외
+        if (!isValidPatternFormat(p)) continue;
+
+        // 최근 500회차 안에서 최신일수록(i가 클수록) 더 높은 가중치 점수 부여
+        const recencyWeight = (i + 1) / totalRecentRounds;
+        candidateScoreMap[p] = (candidateScoreMap[p] || 0) + recencyWeight;
+    }
+
+    // 가중치 점수 높은 순 정렬하여 TOP 5 추출
+    let top5Patterns = Object.keys(candidateScoreMap)
+        .sort((a, b) => candidateScoreMap[b] - candidateScoreMap[a])
+        .slice(0, 10);
+
+    // 만약 필터링이 너무 강해서 5개가 안 채워질 경우를 대비한 밸런스 예비 패턴
+    if (top5Patterns.length < 5) {
+        const defaultPool = [
+            '1-2-1-1-1', '1-1-2-1-1', '2-1-1-1-1', '1-1-1-2-1', '1-1-1-1-2',
+            '2-0-2-1-1', '1-2-0-2-1', '2-1-0-2-1', '1-0-2-2-1', '2-2-0-1-1'
+        ];
+        defaultPool.forEach(p => {
+            if (p !== lastDist && !directNextPatterns.has(p) && isValidPatternFormat(p) && !top5Patterns.includes(p) && top5Patterns.length < 5) {
+                top5Patterns.push(p);
+            }
+        });
     }
     
-    console.log(`🔥 현재 패턴 [${lastDist}]의 다음 회차들 중 최신순 가중치 정렬 TOP 5:`, top5Patterns);
+    console.log(`🔥 [최종 추천 TOP 5] 최신 500회차 트렌드 반영 (A, B 배제):`, top5Patterns);
 
-    // index.html의 입력창에 쉼표로 연결해서 최종 주입
+    // index.html의 입력창에 5개 패턴 자동 주입
     if (document.getElementById('patternInput')) {
         document.getElementById('patternInput').value = top5Patterns.join(', ');
     }
@@ -305,41 +339,59 @@ function runCustomGenerator() {
     const patterns = input.split(',').map(p => p.trim());
     let finalResults = [];
 
-    // 💡 [핵심 성능 최적화] 역대 당첨 번호들을 '1,5,12,23,34,45' 형태의 문자열 세트로 미리 빠르게 변환합니다.
+    // 과거 당첨 번호 세트
     const historicalSet = new Set();
-    if (lottoData && Array.isArray(lottoData)) {
+    if (typeof lottoData !== 'undefined' && Array.isArray(lottoData)) {
         lottoData.forEach(item => {
             if (item.numbers && Array.isArray(item.numbers)) {
-                // 오름차순 정렬된 번호들을 쉼표로 이어 붙여서 고유 지문(Key) 생성
                 const sortedKey = [...item.numbers].sort((a, b) => a - b).join(',');
                 historicalSet.add(sortedKey);
             }
         });
     }
 
-    console.log(`[중복 필터 활성화] 역대 당첨 데이터 ${historicalSet.size개}를 대조하여 중복을 차단합니다.`);
+    // 동일 번호대(자리) 최대 2개 제한 검증
+    function isMaxTwoPerGroup(numbers) {
+        const counts = [0, 0, 0, 0, 0];
+        for (let num of numbers) {
+            let groupIdx = 0;
+            if (num >= 1 && num <= 9) groupIdx = 0;
+            else if (num >= 10 && num <= 19) groupIdx = 1;
+            else if (num >= 20 && num <= 29) groupIdx = 2;
+            else if (num >= 30 && num <= 39) groupIdx = 3;
+            else if (num >= 40 && num <= 45) groupIdx = 4;
+
+            counts[groupIdx]++;
+            if (counts[groupIdx] > 2) return false;
+        }
+        return true;
+    }
 
     patterns.forEach(pattern => {
         let bestNums = [];
         let bestScore = -1;
         let foundValidCandidate = false;
 
-        // 해당 패턴당 최대 500번 시뮬레이션 (과거 당첨 번호와 겹치지 않는 유효한 조합을 찾을 때까지)
-        for (let i = 0; i < 500; i++) {
+        // 💡 시뮬레이션을 돌며 밸런스 조건에 부합하는 번호만 필터링합니다.
+        for (let i = 0; i < 2000; i++) {
             let candidate = Generator.generateByDist(pattern);
             if (!candidate || candidate.length !== 6) continue;
 
-            // 후보 번호도 정렬 후 문자열 지문 생성
-            const candidateKey = [...candidate].sort((a, b) => a - b).join(',');
+            candidate.sort((a, b) => a - b);
+            const candidateKey = candidate.join(',');
 
-            // 🛑 [중복 검사 필터] 만약 역대 당첨된 적이 있는 조합이라면 과감하게 버림(continue)!
-            if (historicalSet.has(candidateKey)) {
-                continue; 
-            }
+            // 🛑 [필터 1] 번호대별 최대 2개 제한
+            if (!isMaxTwoPerGroup(candidate)) continue;
 
+            // 🛑 [필터 2] 과거 1등 당첨 이력 제외
+            if (historicalSet.has(candidateKey)) continue;
+
+            // 🔥 [필터 3] 바로 여기서 호출합니다! (합계, 홀짝, 3연번, 끝자리 검증)
+            if (!isValidCombination(candidate)) continue;
+
+            // 모든 필터를 통과한 진짜 알짜배기 조합만 AI 평가
             let score = AIEvaluator.evaluate(candidate);
             
-            // 유효한 후보 중 AI 점수가 가장 높은 녀석 채택
             if (score > bestScore) {
                 bestScore = score;
                 bestNums = candidate;
@@ -347,7 +399,7 @@ function runCustomGenerator() {
             }
         }
         
-        // 만약 500번 돌리는 동안 필터에 걸려 적당한 걸 못 찾았을 경우의 안전장치
+        // 예외 처리 (조건이 너무 깐깐해서 안 뽑혔을 경우)
         if (!foundValidCandidate || bestNums.length === 0) {
             bestNums = Generator.generateByDist(pattern);
         }
@@ -360,7 +412,6 @@ function runCustomGenerator() {
         });
     });
 
-    // 화면에 렌더링
     renderGeneratorResults(finalResults);
 }
 
@@ -375,10 +426,13 @@ function tracePatternHistory(targetPattern = '2-0-2-1-1') {
                     <tr style="background:#e9ecef;">
                         <th style="padding:10px; border:1px solid #ccc; background:#f1f3f5;">◀ 이전 회차</th>
                         <th style="padding:10px; border:1px solid #ccc; background:#f1f3f5;">◀ 이전 패턴</th>
+                        <th style="padding:10px; border:1px solid #ccc; background:#f1f3f5;">◀ 이전 합계</th>
                         <th style="padding:10px; border:1px solid #ccc; background:#fff3cd;">🎯 조회 회차</th>
                         <th style="padding:10px; border:1px solid #ccc; background:#fff3cd;">🎯 조회 번호 (패턴)</th>
+                        <th style="padding:10px; border:1px solid #ccc; background:#fff3cd;">🎯 조회 합계</th>
                         <th style="padding:10px; border:1px solid #ccc; background:#ffd2d2; color: #d9534f;">▶ 다음 회차</th>
                         <th style="padding:10px; border:1px solid #ccc; background:#ffd2d2; color: #d9534f;">▶ 다음 패턴</th>
+                        <th style="padding:10px; border:1px solid #ccc; background:#ffd2d2; color: #d9534f;">▶ 다음 합계</th>
                         <th style="padding:10px; border:1px solid #ccc;">연속 여부</th>
                     </tr>
                 </thead>
@@ -387,7 +441,7 @@ function tracePatternHistory(targetPattern = '2-0-2-1-1') {
 
     let matchCount = 0;
 
-    // 이전 회차(i-1)와 다음 회차(i+1)가 모두 존재해야 하므로 index 1부터 length-2 까지만 돕니다.
+    // 이전 회차(i-1)와 다음 회차(i+1)가 모두 존재해야 하므로 index 1부터 length-2 까지만 탐색
     for (let i = 1; i < lottoData.length - 1; i++) {
         if (lottoData[i].dist === targetPattern) {
             matchCount++;
@@ -395,27 +449,35 @@ function tracePatternHistory(targetPattern = '2-0-2-1-1') {
             const currentRound = lottoData[i];     // 조회된 패턴 회차
             const nextRound = lottoData[i + 1];    // 다음 회차
             
+            // 💡 각 회차별 번호 합계 구하기 (문자열 대비 parseInt 적용)
+            const prevSum = prevRound.numbers ? prevRound.numbers.reduce((acc, cur) => acc + (parseInt(cur, 10) || 0), 0) : 0;
+            const currentSum = currentRound.numbers ? currentRound.numbers.reduce((acc, cur) => acc + (parseInt(cur, 10) || 0), 0) : 0;
+            const nextSum = nextRound.numbers ? nextRound.numbers.reduce((acc, cur) => acc + (parseInt(cur, 10) || 0), 0) : 0;
+
             // 다음 회차도 패턴이 똑같은지 확인 (연속 여부)
             const isConsecutive = nextRound.dist === targetPattern;
             
-            // 다음 회차가 연속이면 행 전체에 약간의 포인트를 줍니다.
+            // 다음 회차가 연속이면 행 전체 배경색 하이라이트
             const rowStyle = isConsecutive ? 'background-color: #fff9db;' : '';
 
             html += `
                 <tr style="${rowStyle}">
-                    <!-- 이전 회차 정보 -->
+                    <!-- 이전 회차 정보 및 합계 -->
                     <td style="padding:10px; border:1px solid #eee; color:#666;">${prevRound.round}회</td>
                     <td style="padding:10px; border:1px solid #eee; color:#666; font-family:monospace;">${prevRound.dist}</td>
+                    <td style="padding:10px; border:1px solid #eee; color:#555; background:#f8f9fa; font-weight:bold;">${prevSum}</td>
                     
-                    <!-- 조회 회차 (기준) -->
+                    <!-- 조회 회차 (기준) 및 합계 -->
                     <td style="padding:10px; border:1px solid #eee; font-weight:bold; background:#fffbeb;">${currentRound.round}회</td>
                     <td style="padding:10px; border:1px solid #eee; background:#fffbeb;">
                         ${currentRound.numbers.join(', ')} <b style="color:#555;">(${currentRound.dist})</b>
                     </td>
+                    <td style="padding:10px; border:1px solid #eee; font-weight:bold; color:#d97706; background:#fffbeb;">${currentSum}</td>
                     
-                    <!-- 다음 회차 정보 -->
+                    <!-- 다음 회차 정보 및 합계 -->
                     <td style="padding:10px; border:1px solid #eee; font-weight:bold; color: #d9534f; background:#fff5f5;">${nextRound.round}회</td>
                     <td style="padding:10px; border:1px solid #eee; font-weight:bold; color: #d9534f; font-family:monospace; background:#fff5f5;">${nextRound.dist}</td>
+                    <td style="padding:10px; border:1px solid #eee; font-weight:bold; color: #d9534f; background:#fff5f5;">${nextSum}</td>
                     
                     <!-- 연속 마크 -->
                     <td style="padding:10px; border:1px solid #eee;">
@@ -427,7 +489,7 @@ function tracePatternHistory(targetPattern = '2-0-2-1-1') {
     }
 
     if (matchCount === 0) {
-        html += `<tr><td colspan="7" style="padding:20px; color:#999;">해당 패턴의 데이터가 없습니다.</td></tr>`;
+        html += `<tr><td colspan="10" style="padding:20px; color:#999;">해당 패턴의 데이터가 없습니다.</td></tr>`;
     }
 
     html += `
@@ -435,10 +497,43 @@ function tracePatternHistory(targetPattern = '2-0-2-1-1') {
             </table>
             <p style="margin-top:10px; font-size:12px; color:#666; text-align:left;">
                 * 총 <b>${matchCount}번</b>의 패턴 출현 기록입니다. 
-                오른쪽 <b>[▶ 다음 패턴]</b> 칸에 적힌 녀석들의 통계를 내서 가장 많이 나온 걸 AI가 추천해 주는 원리입니다.
+                오른쪽 <b>[▶ 다음 패턴]</b> 및 <b>[▶ 다음 합계]</b> 칸을 통해 해당 패턴 출현 후 번호와 합계의 변동 흐름을 추적할 수 있습니다.
             </p>
         </div>
     `;
 
     document.getElementById('generatorResults').innerHTML = html;
+}
+
+// 🎯 완성형 번호 조합 밸런스 검증 함수
+function isValidCombination(nums) {
+    if (!nums || nums.length !== 6) return false;
+
+    // 오름차순 정렬
+    const sorted = [...nums].sort((a, b) => a - b);
+
+    // 1. 합계 검증 (100 ~ 170 구간만 허용)
+    const sum = sorted.reduce((acc, cur) => acc + cur, 0);
+    if (sum < 100 || sum > 170) return false;
+
+    // 2. 홀짝 비율 검증 (홀수 개수가 2개, 3개, 4개인 경우만 허용)
+    const oddCount = sorted.filter(n => n % 2 !== 0).length;
+    if (oddCount < 2 || oddCount > 4) return false;
+
+    // 3. 3연속 이상 숫자 차단 (예: 11, 12, 13 금지)
+    for (let i = 0; i < sorted.length - 2; i++) {
+        if (sorted[i + 1] === sorted[i] + 1 && sorted[i + 2] === sorted[i] + 2) {
+            return false;
+        }
+    }
+
+    // 4. 동일 끝자리 3개 이상 차단 (예: 4, 14, 24 금지)
+    const lastDigits = sorted.map(n => n % 10);
+    const digitCounts = {};
+    for (let d of lastDigits) {
+        digitCounts[d] = (digitCounts[d] || 0) + 1;
+        if (digitCounts[d] >= 3) return false;
+    }
+
+    return true; // 모든 밸런스 조건을 통과한 실전형 조합!
 }
