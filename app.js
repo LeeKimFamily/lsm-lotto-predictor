@@ -203,12 +203,11 @@ async function autoLoadFiles() {
     alert("lotto.json 파일을 찾을 수 없습니다. 수동 업로드를 사용하세요.");
 }
 
-// 🎯 [최신 500회차 기준] 2중 제외(A, B) 및 쏠림 필터를 거친 트렌드 패턴 TOP 5 주입
+// 🎯 [과거 미출현 전환 패턴 전용]
+// 최근 500회차 동안 현재 패턴(A) 직후에 단 한 번도 나오지 않았던 '신규 전환 패턴' TOP 10 추출
 function processDataAutomatically() {
-    // 1. 전체 데이터 정렬 (과거 -> 최신)
     lottoData.sort((a, b) => a.round - b.round);
     
-    // 전체 통계 렌더링 (기존 유지)
     const stats = Analyzer.analyze(lottoData);
     let finalHtml = Analyzer.render(stats);
 
@@ -229,7 +228,7 @@ function processDataAutomatically() {
     const prediction = Predictor.predictNext(lottoData, transitions);
     finalHtml += Predictor.renderPrediction(prediction);
 
-    // 💡 [패턴 검증 함수] 한 자리에 3개 이상 쏠리는 패턴 무조건 제외 (최대 2개 허용)
+    // 💡 [패턴 검증] 한 자리에 3개 이상 쏠리는 패턴은 차단 (최대 2개 제한)
     function isValidPatternFormat(patternStr) {
         if (!patternStr) return false;
         const counts = patternStr.split('-').map(Number);
@@ -240,71 +239,71 @@ function processDataAutomatically() {
     }
 
     // ---------------------------------------------------------------
-    // 🛑 [최신 500회차 트렌드 집중 분석 & 2중 필터링 로직]
+    // 🛑 [최근 500회차 기준 - '현재 패턴 직후 출현 기록 0회' 패턴 추적]
     // ---------------------------------------------------------------
-    const RECENT_LIMIT = 1000;
-    // 전체 데이터 중 맨 뒤(최신)에서 500개만 싹둑 잘라서 분석에 사용합니다.
+    const RECENT_LIMIT = 500;
     const recentData = lottoData.slice(-RECENT_LIMIT); 
 
-    const directNextPatterns = new Set(); 
+    // 과거 현재 패턴(A) 바로 다음에 나왔던 패턴들(B) 수집
+    const appearedAfterLastDist = new Set(); 
     
-    // 1. 최근 500회차 안에서 A(최신 패턴) 바로 다음에 나왔던 패턴들(B) 수집
     for (let i = 0; i < recentData.length - 1; i++) {
         if (recentData[i].dist === lastDist) {
-            const nextPattern = recentData[i + 1].dist;
-            directNextPatterns.add(nextPattern); 
+            appearedAfterLastDist.add(recentData[i + 1].dist); 
         }
     }
 
-    console.log(`🛑 [최신 500회차 기준 제외 B] 과거 ${lastDist} 직후 패턴:`, Array.from(directNextPatterns));
+    console.log(`🛑 [과거에 등장했던 패턴들 (제외 대상)]`, Array.from(appearedAfterLastDist));
 
-    // 최근 500회차 기반 트렌드 가중치 계산
-    const candidateScoreMap = {};
-    const totalRecentRounds = recentData.length;
-
+    // 최근 500회차 전체에서 등장했던 모든 유효 패턴 모음 (기본 출현 빈도가 있는 패턴 우선 고려)
+    const overallPatternWeight = {};
     for (let i = 0; i < recentData.length; i++) {
         const p = recentData[i].dist;
-
-        // [필터 1] 최신 패턴(A) 제외
-        if (p === lastDist) continue;
-
-        // [필터 2] 과거 직후 출현 패턴(B) 제외!
-        if (directNextPatterns.has(p)) continue;
-
-        // [필터 3] 한 자리에 3개 이상 쏠리는 패턴 제외
-        if (!isValidPatternFormat(p)) continue;
-
-        // 최근 500회차 안에서 최신일수록(i가 클수록) 더 높은 가중치 점수 부여
-        const recencyWeight = (i + 1) / totalRecentRounds;
-        candidateScoreMap[p] = (candidateScoreMap[p] || 0) + recencyWeight;
+        if (isValidPatternFormat(p)) {
+            overallPatternWeight[p] = (overallPatternWeight[p] || 0) + (i + 1);
+        }
     }
 
-    // 가중치 점수 높은 순 정렬하여 TOP 5 추출
-    let top5Patterns = Object.keys(candidateScoreMap)
-        .sort((a, b) => candidateScoreMap[b] - candidateScoreMap[a])
+    // 🔥 핵심 조건: 현재 패턴(A) 다음에 '단 한 번도 나온 적 없는(0회)' 패턴만 필터링
+    const unappearedPatterns = Object.keys(overallPatternWeight).filter(p => {
+        // 1. 현재 패턴 자체(A) 제외
+        if (p === lastDist) return false;
+        // 2. 과거에 직후 등장한 적 있는 패턴(B) 제외 (출현 이력 있으면 삭제!)
+        if (appearedAfterLastDist.has(p)) return false;
+        // 3. 자리당 3개 이상 쏠림 패턴 제외
+        if (!isValidPatternFormat(p)) return false;
+        
+        return true;
+    });
+
+    // 전체 출현 빈도 가중치 순으로 정렬하여 상위 10개 추출
+    let top10Patterns = unappearedPatterns
+        .sort((a, b) => overallPatternWeight[b] - overallPatternWeight[a])
         .slice(0, 10);
 
-    // 만약 필터링이 너무 강해서 5개가 안 채워질 경우를 대비한 밸런스 예비 패턴
-    if (top5Patterns.length < 5) {
+    // 💡 만약 미출현 패턴 후보가 10개 미만일 경우 예비 패턴 풀에서 추가 보충
+    if (top10Patterns.length < 10) {
         const defaultPool = [
             '1-2-1-1-1', '1-1-2-1-1', '2-1-1-1-1', '1-1-1-2-1', '1-1-1-1-2',
-            '2-0-2-1-1', '1-2-0-2-1', '2-1-0-2-1', '1-0-2-2-1', '2-2-0-1-1'
+            '2-0-2-1-1', '1-2-0-2-1', '2-1-0-2-1', '1-0-2-2-1', '2-2-0-1-1',
+            '0-2-2-1-1', '1-0-2-1-2', '2-1-1-0-2', '1-2-1-0-2', '2-0-1-2-1'
         ];
-        defaultPool.forEach(p => {
-            if (p !== lastDist && !directNextPatterns.has(p) && isValidPatternFormat(p) && !top5Patterns.includes(p) && top5Patterns.length < 5) {
-                top5Patterns.push(p);
+
+        for (let p of defaultPool) {
+            if (p !== lastDist && !appearedAfterLastDist.has(p) && isValidPatternFormat(p) && !top10Patterns.includes(p)) {
+                top10Patterns.push(p);
             }
-        });
+            if (top10Patterns.length >= 10) break;
+        }
     }
-    
-    console.log(`🔥 [최종 추천 TOP 5] 최신 500회차 트렌드 반영 (A, B 배제):`, top5Patterns);
 
-    // index.html의 입력창에 5개 패턴 자동 주입
+    console.log(`🔥 [완전 미출현 전이 패턴 TOP 10]`, top10Patterns);
+
+    // index.html 입력창에 자동 주입
     if (document.getElementById('patternInput')) {
-        document.getElementById('patternInput').value = top5Patterns.join(', ');
+        document.getElementById('patternInput').value = top10Patterns.join(', ');
     }
 
-    // 결과 반영 및 액션박스 노출
     document.getElementById('status').innerHTML = finalHtml;
     document.getElementById('actionBox').style.display = 'block';
 }
