@@ -333,12 +333,16 @@ window.onload = async () => {
 
 function runCustomGenerator() {
     const input = document.getElementById('patternInput').value;
-    if (!input) return alert('패턴을 입력해주세요.');
+    if (!input || input.trim() === '') return alert('패턴을 입력해주세요.');
 
-    const patterns = input.split(',').map(p => p.trim());
+    // 입력된 패턴 배열 (중복 제거)
+    const patterns = [...new Set(input.split(',').map(p => p.trim()).filter(p => p !== ''))];
+    
+    // 🎯 목표 추천 게임 수: 10게임
+    const TARGET_GAMES = 10;
     let finalResults = [];
 
-    // 과거 당첨 번호 세트
+    // 과거 당첨 번호 세트 (중복 방지)
     const historicalSet = new Set();
     if (typeof lottoData !== 'undefined' && Array.isArray(lottoData)) {
         lottoData.forEach(item => {
@@ -349,7 +353,7 @@ function runCustomGenerator() {
         });
     }
 
-    // 동일 번호대(자리) 최대 2개 제한 검증
+    // 번호대별 최대 2개 제한 검증
     function isMaxTwoPerGroup(numbers) {
         const counts = [0, 0, 0, 0, 0];
         for (let num of numbers) {
@@ -366,18 +370,31 @@ function runCustomGenerator() {
         return true;
     }
 
-    patterns.forEach(pattern => {
+    // 이미 이번 추천 목록에 포함된 번호 조합인지 확인하는 세트
+    const generatedCombinationSet = new Set();
+
+    // 💡 10개 게임이 채워질 때까지 반복 생성
+    let gameCount = 0;
+    let patternIdx = 0;
+
+    while (gameCount < TARGET_GAMES) {
+        // 입력받은 패턴들을 순환(Round-Robin)하며 배분
+        const currentPattern = patterns[patternIdx % patterns.length];
+        
         let bestNums = [];
         let bestScore = -1;
         let foundValidCandidate = false;
 
-        // 💡 시뮬레이션을 돌며 밸런스 조건에 부합하는 번호만 필터링합니다.
+        // 패턴당 2000번 시뮬레이션 돌려 최상점수 조합 1개 뽑기
         for (let i = 0; i < 2000; i++) {
-            let candidate = Generator.generateByDist(pattern);
+            let candidate = Generator.generateByDist(currentPattern);
             if (!candidate || candidate.length !== 6) continue;
 
             candidate.sort((a, b) => a - b);
             const candidateKey = candidate.join(',');
+
+            // 🛑 [중복 방지] 이번 추천 세트 안에서 이미 뽑힌 번호 조합은 제외
+            if (generatedCombinationSet.has(candidateKey)) continue;
 
             // 🛑 [필터 1] 번호대별 최대 2개 제한
             if (!isMaxTwoPerGroup(candidate)) continue;
@@ -385,31 +402,37 @@ function runCustomGenerator() {
             // 🛑 [필터 2] 과거 1등 당첨 이력 제외
             if (historicalSet.has(candidateKey)) continue;
 
-            // 🔥 [필터 3] 바로 여기서 호출합니다! (합계, 홀짝, 3연번, 끝자리 검증)
-            if (!isValidCombination(candidate)) continue;
+            // 🛑 [필터 3] 밸런스 검증 (합계 100~170, 홀짝, 3연번 차단, 동일 끝수 차단)
+            if (typeof isValidCombination === 'function' && !isValidCombination(candidate)) continue;
 
-            // 모든 필터를 통과한 진짜 알짜배기 조합만 AI 평가
+            // 조건 통과 조합 중 AI 평가 점수가 가장 높은 번호 채택
             let score = AIEvaluator.evaluate(candidate);
-            
             if (score > bestScore) {
                 bestScore = score;
                 bestNums = candidate;
                 foundValidCandidate = true;
             }
         }
-        
-        // 예외 처리 (조건이 너무 깐깐해서 안 뽑혔을 경우)
+
+        // 조건이 너무 타이트하여 완벽히 일치하는 걸 못 찾았을 경우 기본 생성
         if (!foundValidCandidate || bestNums.length === 0) {
-            bestNums = Generator.generateByDist(pattern);
+            bestNums = Generator.generateByDist(currentPattern);
+            bestNums.sort((a, b) => a - b);
         }
+
+        const finalKey = bestNums.join(',');
+        generatedCombinationSet.add(finalKey);
 
         finalResults.push({
             nums: bestNums,
             score: bestScore,
-            dist: pattern,
+            dist: currentPattern,
             history: Validator.checkHistory(bestNums, lottoData)
         });
-    });
+
+        gameCount++;
+        patternIdx++; // 다음 패턴으로 이동 (1개만 써있으면 계속 해당 패턴 사용)
+    }
 
     renderGeneratorResults(finalResults);
 }
